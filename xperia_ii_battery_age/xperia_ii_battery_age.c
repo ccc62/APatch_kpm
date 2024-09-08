@@ -1,87 +1,73 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
-/*
- * Copyright (C) 2023 lzghzr. All Rights Reserved.
- */
+#include <linux/module.h>
+#include <linux/fs.h>
+#include <linux/mount.h>
+#include <linux/nsproxy.h>
+#include <linux/dcache.h>
+#include <linux/sched.h>
+#include <linux/mnt_namespace.h>
+#include <linux/proc_fs.h>
+#include <linux/namei.h>
 
-#include <compiler.h>
-#include <hook.h>
-#include <kpmodule.h>
-#include <kputils.h>
-#include <linux/kernel.h>
-#include <linux/printk.h>
+MODULE_LICENSE("GPL");
+MODULE_AUTHOR("Your Name");
+MODULE_DESCRIPTION("Kernel module to unmount Termux mount point");
 
-#include "xiiba_utils.h"
+static struct vfsmount *get_mount_by_path(const char *path)
+{
+    struct path p;
+    struct vfsmount *mnt = NULL;
+    int ret;
 
-KPM_NAME("xperia_ii_battery_age");
-KPM_VERSION(XIIBA_VERSION);
-KPM_LICENSE("GPL v2");
-KPM_AUTHOR("lzghzr");
-KPM_DESCRIPTION("set xperia ii battery aging level");
-
-#define FG_IMA_DEFAULT 0
-#define SOMC_AGING_LEVEL_WORD 291
-#define SOMC_AGING_LEVEL_OFFSET 0
-
-struct fg_dev;
-
-static int(*fg_sram_read)(struct fg_dev* fg, u16 address, u8 offset, u8* val, int len, int flags) = 0;
-static int(*fg_sram_write)(struct fg_dev* fg, u16 address, u8 offset, u8* val, int len, int flags) = 0;
-
-u8 aging = 0;
-struct fg_dev* fg = NULL;
-
-static long inline_hook_control0(const char* args, char* __user out_msg, int outlen) {
-  aging = args ? *args - '0' : 0;
-  if (aging > 5)
-    return -1;
-
-  int rc = fg_sram_write(fg, SOMC_AGING_LEVEL_WORD, SOMC_AGING_LEVEL_OFFSET, &aging, 1, FG_IMA_DEFAULT);
-  char echo[64] = "";
-  if (rc < 0) {
-    sprintf(echo, "error, rc=%d\n", rc);
-    logke("fg_sram_write %s", echo);
-    if (out_msg) {
-      compat_copy_to_user(out_msg, echo, sizeof(echo));
-      return 1;
+    ret = kern_path(path, LOOKUP_FOLLOW, &p);
+    if (ret) {
+        printk(KERN_ERR "Failed to resolve path: %s\n", path);
+        return NULL;
     }
-  } else {
-    sprintf(echo, "success, set batt_aging_level to %d\n", aging);
-    logki("fg_sram_write %s", echo);
-    if (out_msg) {
-      compat_copy_to_user(out_msg, echo, sizeof(echo));
-      return 0;
+
+    mnt = p.mnt;
+    path_put(&p);
+
+    return mnt;
+}
+
+static int unmount_path(const char *path)
+{
+    struct vfsmount *mnt;
+
+    mnt = get_mount_by_path(path);
+    if (!mnt) {
+        printk(KERN_ERR "Failed to get mount for path: %s\n", path);
+        return -EINVAL;
     }
-  }
-  return 0;
+
+    printk(KERN_INFO "Attempting to unmount: %s\n", path);
+    if (mnt) {
+        int ret = do_umount(mnt, MNT_DETACH);
+        if (ret == 0) {
+            printk(KERN_INFO "Successfully unmounted: %s\n", path);
+        } else {
+            printk(KERN_ERR "Failed to unmount: %s\n", path);
+        }
+        return ret;
+    }
+
+    return -ENOENT;
 }
 
-void before_read(hook_fargs6_t* args, void* udata) {
-  unhook_func(fg_sram_read);
-  fg = (struct fg_dev*)args->arg0;
-  // u8 *arg3 = (u8 *)args->arg3;
-  // logkd("before read fg: %llu, address: %u, offset: %u, val: %u, len: %d, flags: %d\n", args->arg0, (u16)args->arg1,
-  //       (u8)args->arg2, (u8)*arg3, (int)args->arg4, (int)args->arg5);
-  char age[] = "0";
-  age[0] = aging + '0';
-  inline_hook_control0(age, NULL, NULL);
+static int __init termux_unmount_init(void)
+{
+    printk(KERN_INFO "Termux unmount module loaded\n");
+
+    // 卸载 Termux 的挂载点
+    unmount_path("/data/data/com.termux");
+
+    return 0;
 }
 
-static long inline_hook_init(const char* args, const char* event, void* __user reserved) {
-  aging = args ? *args - '0' : 0;
-  if (aging > 5)
-    return -1;
-
-  lookup_name(fg_sram_write);
-  lookup_name(fg_sram_read);
-  hook_func(fg_sram_read, 6, before_read, 0, 0);
-  return 0;
+static void __exit termux_unmount_exit(void)
+{
+    printk(KERN_INFO "Termux unmount module unloaded\n");
 }
 
-static long inline_hook_exit(void* __user reserved) {
-  unhook_func(fg_sram_read);
-  return 0;
-}
-
-KPM_INIT(inline_hook_init);
-KPM_CTL0(inline_hook_control0);
-KPM_EXIT(inline_hook_exit);
+module_init(termux_unmount_init);
+module_exit(termux_unmount_exit);
