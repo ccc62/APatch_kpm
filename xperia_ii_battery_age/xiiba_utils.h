@@ -12,26 +12,30 @@
 #include <linux/sched.h>
 #include <uapi/asm-generic/errno.h>
 
+#define ERR_LOOKUP_FAILED  -21
+#define ERR_FUNC_NULL      -22
+#define ERR_HOOK_FAILED    -23
+
 #define lookup_name(func)                                  \
   func = 0;                                                \
   func = (typeof(func))kallsyms_lookup_name(#func);        \
   pr_info("kernel function %s addr: %llx\n", #func, func); \
   if (!func)                                               \
   {                                                        \
-    return -21;                                            \
+    return ERR_LOOKUP_FAILED;                              \
   }
 
 #define hook_func(func, argv, before, after, udata)                         \
   if (!func)                                                                \
   {                                                                         \
-    return -22;                                                             \
+    return ERR_FUNC_NULL;                                                   \
   }                                                                         \
   hook_err_t hook_err_##func = hook_wrap(func, argv, before, after, udata); \
   if (hook_err_##func)                                                      \
   {                                                                         \
     func = 0;                                                               \
     pr_err("hook %s error: %d\n", #func, hook_err_##func);                  \
-    return -23;                                                             \
+    return ERR_HOOK_FAILED;                                                 \
   }                                                                         \
   else                                                                      \
   {                                                                         \
@@ -44,5 +48,7 @@
     unhook(func);                    \
     func = 0;                        \
   }
+
+#define is_bad_address(ptr) (!ptr || IS_ERR_VALUE(ptr))
 
 #endif /* __XIIBA_UTILS_H */
